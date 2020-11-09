@@ -16,18 +16,17 @@ mod edgeware_bridge {
                     },
                     Lazy};
     use scale::{Decode, Encode};
-    use ink_env::hash::Keccak256;
-
-    use ed25519_compact::*;
+    use sha3::{Digest, Sha3_256};
+    use hex;
 
     const ZERO_ADDRESS_BYTES: [u8; 32] = [0; 32];
+    const ONE_DAY: u64 = 86400;
 
     #[ink(storage)]
     pub struct EdgewareBridge {
-        token_balances: StorageHashMap<AccountId, Balance>,
+        swap_requests: StorageHashMap<Vec<u8>, u16>,
         tokens: StorageHashMap<AccountId, bool>,
-        validators: StorageHashMap<Vec<u8>, bool>, // raw PublicKey as a key
-        workers: StorageHashMap<AccountId, bool>,
+        validators: StorageHashMap<AccountId, bool>,
         daily_limit: StorageHashMap<AccountId, u128>,
         daily_spend: StorageHashMap<AccountId, u128>,
         daily_limit_set_time: StorageHashMap<AccountId, u64>,
@@ -37,7 +36,7 @@ mod edgeware_bridge {
         tx_expiration_time: u64,
         owner: AccountId,
         transfer_nonce: u128,
-        token_contract: Lazy<ERC20Token>,
+        token_contract: ERC20Token,
     }
 
     /// Emitted when an user want to make cross chain transfer
@@ -64,28 +63,12 @@ mod edgeware_bridge {
     )]
     pub struct SwapMessage {
         pub chain_id: u8,
-        pub receiver: [u8; 32],
+        pub receiver: AccountId,
         pub sender: String,
         pub timestamp: u64,
         pub amount: u128,
-        pub asset: [u8; 32],
+        pub asset: AccountId,
         pub transfer_nonce: u128,
-    }
-
-    #[derive(Encode, Decode, SpreadLayout, PackedLayout)]
-    #[cfg_attr(
-        feature = "std",
-        derive(
-            Debug,
-            PartialEq,
-            Eq,
-            scale_info::TypeInfo,
-            ink_storage::traits::StorageLayout
-        )
-    )]
-    pub struct EdSignature {
-        pub signature_data: Vec<u8>,
-        pub signer: Vec<u8>,
     }
 
     impl EdgewareBridge {
@@ -95,9 +78,8 @@ mod edgeware_bridge {
             max_permissible_validator_count: u16,
             transfer_fee: u128,
             coin_daily_limit: u128,
-            token_code_hash: Hash,
+            token_contract: ERC20Token,
         ) -> Self {
-            let total_balance = Self::env().balance();
             let caller = Self::env().caller();
             let zero_address: AccountId = AccountId::from(ZERO_ADDRESS_BYTES);
             let mut daily_limit: StorageHashMap<AccountId, u128> = StorageHashMap::default();
@@ -105,26 +87,20 @@ mod edgeware_bridge {
             daily_limit.insert(zero_address, coin_daily_limit);
             let mut daily_limit_set_time: StorageHashMap<AccountId, u64> = StorageHashMap::default();
             daily_limit_set_time.insert(zero_address, current_timestamp);
-            let token = ERC20Token::new(String::from("PolkaDot"), String::from("DOT"))
-                .endowment(total_balance / 2)
-                .code_hash(token_code_hash)
-                .instantiate()
-                .expect("failed at instantiating the `Token` contract");
             Self {
-                token_balances: StorageHashMap::default(),
+                swap_requests: StorageHashMap::default(),
                 tokens: StorageHashMap::default(),
                 validators: StorageHashMap::default(),
-                workers: StorageHashMap::default(),
                 daily_spend: StorageHashMap::default(),
                 fee: transfer_fee,
                 signature_threshold: threshold,
                 max_validator_count: max_permissible_validator_count,
-                tx_expiration_time: 86400,
+                tx_expiration_time: ONE_DAY,
                 owner: caller,
                 transfer_nonce: 0,
                 daily_limit,
                 daily_limit_set_time,
-                token_contract: Lazy::new(token),
+                token_contract,
             }
         }
 
@@ -137,36 +113,28 @@ mod edgeware_bridge {
         #[ink(message)]
         pub fn set_fee(&mut self, new_fee: u128) {
             self.ensure_owner(self.env().caller());
+            assert!(new_fee > 0 || new_fee < 100, "Fee should be between 0 and 100");
             self.fee = new_fee;
         }
 
         #[ink(message)]
-        pub fn add_validator(&mut self, new_validator: Vec<u8>) {
+        pub fn add_validator(&mut self, new_validator: AccountId) {
             self.ensure_owner(self.env().caller());
+            let count_acrive_validators: u16 = self.validators.len() as u16;
+            assert!(count_acrive_validators + 1 <= self.max_validator_count, "Count of Validators already reach maximum");
             self.validators.insert(new_validator, true);
         }
 
         #[ink(message)]
-        pub fn remove_validator(&mut self, validator_pub_key: Vec<u8>) {
+        pub fn remove_validator(&mut self, validator: AccountId) {
             self.ensure_owner(self.env().caller());
-            assert_eq!(self.validators.take(&validator_pub_key).is_some(), true);
-        }
-
-        #[ink(message)]
-        pub fn add_worker(&mut self, new_worker: AccountId) {
-            self.ensure_owner(self.env().caller());
-            self.workers.insert(new_worker, true);
-        }
-
-        #[ink(message)]
-        pub fn remove_worker(&mut self, worker: AccountId) {
-            self.ensure_owner(self.env().caller());
-            assert_eq!(self.workers.take(&worker).is_some(), true);
+            assert_eq!(self.validators.take(&validator).is_some(), true);
         }
 
         #[ink(message)]
         pub fn set_threshold(&mut self, new_signature_threshold: u16) {
             self.ensure_owner(self.env().caller());
+            assert!(new_signature_threshold > 0 && new_signature_threshold <= self.max_validator_count, "Signature threshold must be more than zero and less or equal maximum validators count");
             self.signature_threshold = new_signature_threshold;
         }
 
@@ -174,6 +142,7 @@ mod edgeware_bridge {
         pub fn add_token(&mut self, new_token: AccountId, token_daily_limit: u128) {
             self.ensure_owner(self.env().caller());
             self.tokens.insert(new_token, true);
+            assert!(token_daily_limit > 0, "Token daily limit must be more than zero");
             self.daily_limit.insert(new_token, token_daily_limit);
             self.daily_limit_set_time.insert(new_token, self.env().block_timestamp());
         }
@@ -190,53 +159,46 @@ mod edgeware_bridge {
         pub fn set_daily_limit(&mut self, new_limit: u128, asset_limited: AccountId) {
             self.ensure_owner(self.env().caller());
             assert_eq!(self.tokens.contains_key(&asset_limited), true);
+            assert!(new_limit > 0, "Daily limit must be more than zero");
             self.daily_limit.insert(asset_limited, new_limit);
         }
 
         #[ink(message)]
         pub fn set_tx_expiration_time(&mut self, new_tx_expiration_time: u64) {
             self.ensure_owner(self.env().caller());
+            assert!(new_tx_expiration_time > 0, "Transaction expiration time must be greater than zero");
             self.tx_expiration_time = new_tx_expiration_time;
         }
 
-        // DEV method, remove in future
+        // Validator method
         #[ink(message)]
-        pub fn get_signer(&self, transfer_info: SwapMessage, ed_sig: EdSignature) -> bool {
-            let signature: Signature = Signature::from_slice(ed_sig.signature_data.as_slice()).unwrap();
-            let message_hash: [u8;32] = self.hash_message(transfer_info);
-            let pub_k: PublicKey = PublicKey::from_slice(ed_sig.signer.as_slice()).unwrap();
-            
-            pub_k.verify(message_hash.as_ref(), &signature).is_ok()
-        }
+        pub fn request_swap(&mut self, transfer_info: SwapMessage) {
+            let caller: AccountId = self.env().caller();
+            assert!(self.validators.get(&caller).is_some(), "Only Validator can send requests to swap assets");
 
-        // DEV method, remove in future
-        #[ink(message)]
-        pub fn get_hash(&self, transfer_info: SwapMessage) -> [u8;32] {
-            let message_hash: [u8;32] = self.hash_message(transfer_info);
-            message_hash
-        }
-
-        #[ink(message)]
-        pub fn request_swap(&mut self, transfer_info: SwapMessage, signatures: Vec<EdSignature>) -> bool {
             assert!(self.check_expiration_time(transfer_info.timestamp.clone()), "Transaction can't be sent because of expiration time");
 
-            let asset: AccountId = AccountId::from(transfer_info.asset);
+            assert!(self.check_asset(&transfer_info.asset), "Unknown asset is trying to transfer");
 
-            assert!(self.check_asset(&asset), "Unknown asset is trying to transfer");
+            let message_hash: Vec<u8> = self.hash_message(transfer_info.clone());
 
-            let receiver_address: AccountId = AccountId::from(transfer_info.receiver);
-
-            assert!(signatures.len() as u16 >= self.signature_threshold && signatures.len() as u16 <= self.max_validator_count, "Wrong count of signatures to make transfer");
-
-            let message_hash: [u8;32] = self.hash_message(transfer_info.clone());
-
-            assert!(self.verify_signatures(message_hash.as_ref(), &signatures),  "Signatures verification is failed");
-
-            let res: bool = self.make_swap(asset, transfer_info.amount.clone(), receiver_address);
-
-            res
+            let number_of_received_swaps: Option<u16> = self.get_number_of_received_request_swaps(&message_hash);
+            match number_of_received_swaps {
+                Some(n) => {
+                    if n + 1 >= self.signature_threshold {
+                        self.make_swap(transfer_info.asset, transfer_info.amount, transfer_info.receiver);
+                        self.swap_requests.take(&message_hash);
+                    } else {
+                        self.swap_requests.insert(message_hash, n + 1);
+                    }
+                },
+                None => {
+                    self.swap_requests.insert(message_hash, 1);
+                }
+            }
         }
 
+        // User method
         #[ink(message)]
         pub fn transfer_coin(&mut self, receiver: String) -> bool {
             let attached_deposit: u128 = self.env().transferred_balance();
@@ -258,11 +220,12 @@ mod edgeware_bridge {
             true
         }
 
+        // User method
         #[ink(message)]
         pub fn transfer_token(&mut self, receiver: String, amount: u128, asset: AccountId) -> bool {
             assert!(self.check_asset(&asset), "Unknown asset is trying to transfer");
             let caller: AccountId = self.env().caller();
-            assert!(self.token_contract.balance_of(caller) >= amount, "Sender doesn't have enough tokens to make transfer");
+            assert!(self.token_contract.balance_of(caller) >= amount, "Sender doesn't have enough tokens to make transfer");  // TODO: refactor, in future there will be couple of tokens
             assert!(self.token_contract.burn(amount.clone(), caller), "Error while burn sender's tokens");
             self.increase_transfer_nonce();
 
@@ -275,6 +238,14 @@ mod edgeware_bridge {
                 timestamp: self.env().block_timestamp(),
             });
             true
+        }
+
+        fn get_number_of_received_request_swaps(&self, message_hash: &Vec<u8>) -> Option<u16> {
+            let number_of_requests: Option<&u16> = self.swap_requests.get(message_hash);
+            match number_of_requests {
+                Some(n) => return Some(*n),
+                None => return None,
+            }
         }
 
         fn increase_transfer_nonce(&mut self) {
@@ -290,10 +261,15 @@ mod edgeware_bridge {
             }
         }
 
-        fn hash_message(&self, swap_message: SwapMessage) -> [u8; 32] {
-            let output: [u8;32] = self.env().hash_encoded::<Keccak256, _>(&swap_message);
-            output
+        fn hash_message(&self, swap_message: SwapMessage) -> Vec<u8> {
+            let encoded: Vec<u8> = swap_message.encode();
+            let mut hasher = Sha3_256::new();
+            hasher.input(encoded.as_slice());
+            let result = hasher.result();
+            result.to_vec()
         }
+
+
 
         fn check_expiration_time(&self, tx_time: u64) -> bool {
             let current_time: u64 = self.env().block_timestamp();
@@ -305,46 +281,18 @@ mod edgeware_bridge {
             }
         }
 
-        fn verify_signatures(&self, signer_message: &[u8], signatures: &Vec<EdSignature>) -> bool {
-            let mut signers: Vec<PublicKey> = Vec::new();
-            
-            for signature in signatures.iter() {
-                let pub_k: PublicKey = PublicKey::from_slice(signature.signer.as_slice()).unwrap();
-                let signature_struct: Signature = Signature::from_slice(signature.signature_data.as_slice()).unwrap();
-                let verified: bool = pub_k.verify(signer_message, &signature_struct).is_ok();
-                if !verified || !self.validators.contains_key(&signature.signer) {
-                    return false;
-                }
-                if signers.len() > 0 {
-                    if !self.check_unique(&pub_k, &signers) {
-                        return false;
-                    }
-                }
-                signers.push(pub_k);
-            }
-            true
-        }
-
-        fn check_unique(&self, new_signer: &PublicKey, all_signers: &Vec<PublicKey>) -> bool {
-            for signer in all_signers.iter() {
-                if signer == new_signer {
-                    return false;
-                }
-            }
-            true
-        }
-
         fn update_daily_limit(&mut self, asset: &AccountId) {
             let current_time: u64 = self.env().block_timestamp();
 
             let last_limit_set_time: &u64 = self.daily_limit_set_time.get(asset).unwrap();
-            if current_time - last_limit_set_time > 86400 {
+            if current_time - last_limit_set_time > ONE_DAY {
                 self.daily_limit_set_time.insert(asset.clone(), current_time);
                 self.daily_spend.insert(asset.clone(), 0);
             }
         }
 
-        fn make_swap(&mut self, asset: AccountId, amount: u128, receiver: AccountId) -> bool {
+        fn make_swap(&mut self, asset: AccountId, amount: u128, receiver: AccountId) {
+
             let asset_daily_limit: u128 = self.daily_limit.get(&asset).unwrap().clone();
 
             assert!(asset_daily_limit > 0, "Can't transfer asset without daily limit");
@@ -366,8 +314,6 @@ mod edgeware_bridge {
                 let amount_to_send: u128 = amount - (amount * self.fee / 100);
                 assert!(self.token_contract.mint(amount_to_send, receiver), "Error while mint tokens for the receiver");
             }
-            
-            true
         }
 
         fn ensure_owner(&self, caller: AccountId) {
@@ -375,10 +321,26 @@ mod edgeware_bridge {
         }
     }
 
-    /// Unit tests in Rust are normally defined within such a `#[cfg(test)]`
-    /// module and test functions are marked with a `#[test]` attribute.
-    /// The below code is technically just normal Rust code.
     #[cfg(test)]
     mod tests {
+        use super::*;
+        use ink_env::{
+            call,
+            test,
+        };
+        type Accounts = test::DefaultAccounts<Environment>;
+        const BRIDGE: [u8; 32] = [7; 32];
+
+        fn set_sender(sender: AccountId) {
+            test::push_execution_context::<Environment>(
+                sender,
+                BRIDGE.into(),
+                1000000,
+                1000000,
+                test::CallData::new(call::Selector::new([0x00; 4])), // dummy
+            );
+        }
+
+        
     }
 }
