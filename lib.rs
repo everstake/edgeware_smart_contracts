@@ -13,18 +13,16 @@ mod edgeware_bridge {
                     traits::{
                         PackedLayout,
                         SpreadLayout,
-                    },
-                    Lazy};
+                    }};
     use scale::{Decode, Encode};
     use sha3::{Digest, Sha3_256};
-    use hex;
 
     const ZERO_ADDRESS_BYTES: [u8; 32] = [0; 32];
     const ONE_DAY: u64 = 86400;
 
     #[ink(storage)]
     pub struct EdgewareBridge {
-        swap_requests: StorageHashMap<Vec<u8>, u16>,
+        swap_requests: StorageHashMap<Vec<u8>, Vec<AccountId>>,
         tokens: StorageHashMap<AccountId, bool>,
         validators: StorageHashMap<AccountId, bool>,
         daily_limit: StorageHashMap<AccountId, u128>,
@@ -83,15 +81,17 @@ mod edgeware_bridge {
             let caller = Self::env().caller();
             let zero_address: AccountId = AccountId::from(ZERO_ADDRESS_BYTES);
             let mut daily_limit: StorageHashMap<AccountId, u128> = StorageHashMap::default();
-            let current_timestamp: u64 = Self::env().block_timestamp();
+            let current_timestamp: u64 = Self::env().block_timestamp() / 1000;
             daily_limit.insert(zero_address, coin_daily_limit);
             let mut daily_limit_set_time: StorageHashMap<AccountId, u64> = StorageHashMap::default();
             daily_limit_set_time.insert(zero_address, current_timestamp);
+            let mut daily_spend: StorageHashMap<AccountId, u128> = StorageHashMap::default();
+            daily_spend.insert(zero_address, 0);
             Self {
                 swap_requests: StorageHashMap::default(),
                 tokens: StorageHashMap::default(),
                 validators: StorageHashMap::default(),
-                daily_spend: StorageHashMap::default(),
+                daily_spend,
                 fee: transfer_fee,
                 signature_threshold: threshold,
                 max_validator_count: max_permissible_validator_count,
@@ -128,6 +128,7 @@ mod edgeware_bridge {
         #[ink(message)]
         pub fn remove_validator(&mut self, validator: AccountId) {
             self.ensure_owner(self.env().caller());
+            assert!((self.validators.len() - 1) as u16 >= self.signature_threshold, "Count of Validators can't be less than necessary threshold of approvals");
             assert_eq!(self.validators.take(&validator).is_some(), true);
         }
 
@@ -144,7 +145,8 @@ mod edgeware_bridge {
             self.tokens.insert(new_token, true);
             assert!(token_daily_limit > 0, "Token daily limit must be more than zero");
             self.daily_limit.insert(new_token, token_daily_limit);
-            self.daily_limit_set_time.insert(new_token, self.env().block_timestamp());
+            self.daily_limit_set_time.insert(new_token, self.env().block_timestamp() / 1000);
+            self.daily_spend.insert(new_token, 0);
         }
 
         #[ink(message)]
@@ -170,6 +172,120 @@ mod edgeware_bridge {
             self.tx_expiration_time = new_tx_expiration_time;
         }
 
+        #[ink(message)]
+        pub fn is_token_in(&self, token: AccountId) -> bool {
+            self.tokens.contains_key(&token)
+        }
+
+        #[ink(message)]
+        pub fn is_validator_in(&self, validator: AccountId) -> bool {
+            self.validators.contains_key(&validator)
+        }
+
+        #[ink(message)]
+        pub fn is_swap_request_in(&self, swap_hash: Vec<u8>) -> bool {
+            self.swap_requests.contains_key(&swap_hash)
+        }
+
+        #[ink(message)]
+        pub fn get_daily_limit(&self, token: AccountId) -> u128 {
+            self.daily_limit.get(&token).unwrap().clone()
+        }
+
+        #[ink(message)]
+        pub fn get_daily_spend(&self, token: AccountId) -> u128 {
+            self.daily_spend.get(&token).unwrap().clone()
+        }
+
+        #[ink(message)]
+        pub fn get_daily_limit_set_time(&self, token: AccountId) -> u64 {
+            self.daily_limit_set_time.get(&token).unwrap().clone()
+        }
+
+        #[ink(message)]
+        pub fn get_fee(&self) -> u128 {
+            self.fee
+        }
+
+        #[ink(message)]
+        pub fn get_signature_threshold(&self) -> u16 {
+            self.signature_threshold
+        }
+
+        #[ink(message)]
+        pub fn get_max_validator_count(&self) -> u16 {
+            self.max_validator_count
+        }
+
+        #[ink(message)]
+        pub fn get_tx_expiration_time(&self) -> u64 {
+            self.tx_expiration_time
+        }
+
+        #[ink(message)]
+        pub fn get_transfer_nonce(&self) -> u128 {
+            self.transfer_nonce
+        }
+
+        #[ink(message)]
+        pub fn get_tokens(&self) -> Vec<AccountId> {
+            let mut tokens: Vec<AccountId> = Vec::new();
+            for el in self.tokens.keys() {
+                tokens.push(el.clone());
+            }
+            tokens
+        }
+
+        #[ink(message)]
+        pub fn get_validators(&self) -> Vec<AccountId> {
+            let mut validators: Vec<AccountId> = Vec::new();
+            for el in self.validators.keys() {
+                validators.push(el.clone());
+            }
+            validators
+        }
+        // DEV
+        #[ink(message)]
+        pub fn get_zero_address(&self) -> AccountId {
+            AccountId::from(ZERO_ADDRESS_BYTES)
+        }
+
+        // DEV
+        #[ink(message)]
+        pub fn get_swaps_list(&self) -> Vec<Vec<u8>> {
+            let mut swap_hashes: Vec<Vec<u8>> = Vec::new();
+            for el in self.swap_requests.keys() {
+                swap_hashes.push(el.clone());
+            }
+            swap_hashes
+        }
+
+        // DEV
+        #[ink(message)]
+        pub fn get_block_timestamp(&self) -> u64 {
+            let current_time: u64 = self.env().block_timestamp() / 1000;
+            current_time
+        }
+
+        // DEV
+        #[ink(message)]
+        pub fn get_count_of_approvals(&self, message_hash: Vec<u8>) -> u16 {
+            let validators_who_approved_swap: Option<Vec<AccountId>> = self.get_validators_who_approved(&message_hash);
+            match validators_who_approved_swap {
+                Some(n) => {
+                    return n.len() as u16;
+                },
+                None => {
+                    return 0;
+                }
+            }
+        }
+
+        #[ink(message)]
+        pub fn test_coin_transfer(&mut self, receiver: AccountId, amount_to_send: u128) {
+            assert!(self.env().transfer(receiver, amount_to_send).is_ok(), "Error while transfer coins to the receiver");
+        }
+
         // Validator method
         #[ink(message)]
         pub fn request_swap(&mut self, transfer_info: SwapMessage) {
@@ -182,24 +298,29 @@ mod edgeware_bridge {
 
             let message_hash: Vec<u8> = self.hash_message(transfer_info.clone());
 
-            let number_of_received_swaps: Option<u16> = self.get_number_of_received_request_swaps(&message_hash);
-            match number_of_received_swaps {
+            let validators_who_approved_swap: Option<Vec<AccountId>> = self.get_validators_who_approved(&message_hash);
+            match validators_who_approved_swap {
                 Some(n) => {
-                    if n + 1 >= self.signature_threshold {
+                    assert!(self.is_in(&n, &caller) == false, "This Validator has already sent approval");
+                    if (n.len() as u16) + 1 >= self.signature_threshold {
                         self.make_swap(transfer_info.asset, transfer_info.amount, transfer_info.receiver);
                         self.swap_requests.take(&message_hash);
                     } else {
-                        self.swap_requests.insert(message_hash, n + 1);
+                        let mut updated_validator_list: Vec<AccountId> = n.clone();
+                        updated_validator_list.push(caller);
+                        self.swap_requests.insert(message_hash, updated_validator_list);
                     }
                 },
                 None => {
-                    self.swap_requests.insert(message_hash, 1);
+                    let mut init_vec_of_validators: Vec<AccountId> = Vec::new();
+                    init_vec_of_validators.push(caller);
+                    self.swap_requests.insert(message_hash, init_vec_of_validators);
                 }
             }
         }
 
         // User method
-        #[ink(message)]
+        #[ink(message, payable)]
         pub fn transfer_coin(&mut self, receiver: String) -> bool {
             let attached_deposit: u128 = self.env().transferred_balance();
             
@@ -215,7 +336,7 @@ mod edgeware_bridge {
                 amount: attached_deposit,
                 asset: zero_address,
                 transfer_nonce: self.transfer_nonce,
-                timestamp: self.env().block_timestamp(),
+                timestamp: self.env().block_timestamp() / 1000,
             });
             true
         }
@@ -235,17 +356,26 @@ mod edgeware_bridge {
                 amount,
                 asset,
                 transfer_nonce: self.transfer_nonce,
-                timestamp: self.env().block_timestamp(),
+                timestamp: self.env().block_timestamp() / 1000,
             });
             true
         }
 
-        fn get_number_of_received_request_swaps(&self, message_hash: &Vec<u8>) -> Option<u16> {
-            let number_of_requests: Option<&u16> = self.swap_requests.get(message_hash);
-            match number_of_requests {
-                Some(n) => return Some(*n),
+        fn get_validators_who_approved(&self, message_hash: &Vec<u8>) -> Option<Vec<AccountId>> {
+            let validators: Option<&Vec<AccountId>> = self.swap_requests.get(message_hash);
+            match validators {
+                Some(n) => return Some(n.clone()),
                 None => return None,
             }
+        }
+
+        fn is_in(&self, list_of_accs: &Vec<AccountId>, new_acc: &AccountId) -> bool {
+            for acc in list_of_accs.iter() {
+                if acc == new_acc {
+                    return true;
+                }
+            }
+            return false;
         }
 
         fn increase_transfer_nonce(&mut self) {
@@ -272,7 +402,7 @@ mod edgeware_bridge {
 
 
         fn check_expiration_time(&self, tx_time: u64) -> bool {
-            let current_time: u64 = self.env().block_timestamp();
+            let current_time: u64 = self.env().block_timestamp() / 1000;
             
             if current_time - tx_time > self.tx_expiration_time {
                 return false;
@@ -282,7 +412,7 @@ mod edgeware_bridge {
         }
 
         fn update_daily_limit(&mut self, asset: &AccountId) {
-            let current_time: u64 = self.env().block_timestamp();
+            let current_time: u64 = self.env().block_timestamp() / 1000;
 
             let last_limit_set_time: &u64 = self.daily_limit_set_time.get(asset).unwrap();
             if current_time - last_limit_set_time > ONE_DAY {
@@ -317,30 +447,11 @@ mod edgeware_bridge {
         }
 
         fn ensure_owner(&self, caller: AccountId) {
-            assert_eq!(caller, self.owner);
+            assert_eq!(caller, self.owner, "This method can be called only by owner");
         }
     }
 
     #[cfg(test)]
     mod tests {
-        use super::*;
-        use ink_env::{
-            call,
-            test,
-        };
-        type Accounts = test::DefaultAccounts<Environment>;
-        const BRIDGE: [u8; 32] = [7; 32];
-
-        fn set_sender(sender: AccountId) {
-            test::push_execution_context::<Environment>(
-                sender,
-                BRIDGE.into(),
-                1000000,
-                1000000,
-                test::CallData::new(call::Selector::new([0x00; 4])), // dummy
-            );
-        }
-
-        
     }
 }
