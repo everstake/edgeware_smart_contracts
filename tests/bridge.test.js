@@ -236,11 +236,31 @@ describe('Bridge', function() {
 
             assert.strictEqual(countOfApprovals, 2);
         });
+        it('6_try to send more than set limit', async function() {
+            this.timeout(50000);
+            let transferAmount = 1000000000000000000n;
+
+            let tx = await bridgeContract.tx.transferCoin(transferAmount / 2n, -1, keyring.addFromUri('//Ferdie').address);
+            let sig2 = await tx.signAndSend(keyring.addFromUri('//Eve'));
+            await sleepAsync(6000);
+
+            let { gasConsumed, result, outcome } = await bridgeContract.query.getTransferNonce(keyring.addFromUri('//Eve').address, 0, -1);
+            let transferNonce = littleEndToHex(result.toHuman().Ok.data.slice(2));
+
+            tx = await bridgeContract.tx.transferCoin(transferAmount, -1, keyring.addFromUri('//Ferdie').address);
+            sig2 = await tx.signAndSend(keyring.addFromUri('//Eve'));
+            await sleepAsync(6000);
+
+            result = await bridgeContract.query.getTransferNonce(keyring.addFromUri('//Eve').address, 0, -1);
+            let transferNonceAfter = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+
+            assert.strictEqual(transferNonceAfter, transferNonce);
+        });
     });
     describe('swap token request', function() {
         before(async function() {
             this.timeout(50000);
-            let tx = await bridgeContract.tx.addToken(0, -1, process.env.TOKEN_ADDRESS, 1000000000000000);
+            let tx = await bridgeContract.tx.addToken(0, -1, process.env.TOKEN_ADDRESS, process.env.CONTRACT_COIN_DAILY_LIMIT);
             let _ = await tx.signAndSend(keyring.addFromUri('//Alice'));
             await sleepAsync(6000);
 
@@ -339,16 +359,36 @@ describe('Bridge', function() {
                 await sleepAsync(6000);
                 const { gasConsumed, result, outcome } = await bridgeContract.query.getCountOfApprovals(keyring.addFromUri('//Alice').address, 0, -1, hashedMessage);
                 let countOfApprovals = littleEndToHex(result.toHuman().Ok.data.slice(2));
-                console.log('Count of hashes');
-                console.log(result.toHuman().Ok.data);
             }
 
             const { gasConsumed, result, outcome } = await bridgeContract.query.getCountOfApprovals(keyring.addFromUri('//Alice').address, 0, -1, hashedMessage);
             let countOfApprovals = littleEndToHex(result.toHuman().Ok.data.slice(2));
-            console.log('Final Count of hashes');
-            console.log(result.toHuman().Ok.data);
 
             assert.strictEqual(countOfApprovals, 2);
+        });
+        it('6_try to send more than set limit', async function() {
+            this.timeout(50000);
+            let transferAmount = 1000000000000000000n;
+
+            let mintTx = await tokenContract.tx.mint(0, -1, new BN(process.env.CONTRACT_COIN_DAILY_LIMIT).mul(new BN(2)), keyring.addFromUri('//Eve').address);
+            let signMint = await mintTx.signAndSend(keyring.addFromUri('//Alice'));
+            await sleepAsync(6000);
+
+            let tx = await bridgeContract.tx.transferToken(0, -1, keyring.addFromUri('//Ferdie').address, new BN(process.env.CONTRACT_COIN_DAILY_LIMIT).div(new BN(2)), process.env.TOKEN_ADDRESS);
+            let sig2 = await tx.signAndSend(keyring.addFromUri('//Eve'));
+            await sleepAsync(6000);
+
+            let { gasConsumed, result, outcome } = await bridgeContract.query.getTransferNonce(keyring.addFromUri('//Eve').address, 0, -1);
+            let transferNonce = littleEndToHex(result.toHuman().Ok.data.slice(2));
+
+            tx = await bridgeContract.tx.transferToken(0, -1, keyring.addFromUri('//Ferdie').address, process.env.CONTRACT_COIN_DAILY_LIMIT, process.env.TOKEN_ADDRESS);
+            sig2 = await tx.signAndSend(keyring.addFromUri('//Eve'));
+            await sleepAsync(6000);
+
+            result = await bridgeContract.query.getTransferNonce(keyring.addFromUri('//Eve').address, 0, -1);
+            let transferNonceAfter = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+
+            assert.strictEqual(transferNonceAfter, transferNonce);
         });
     });
 });

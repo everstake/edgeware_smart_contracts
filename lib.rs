@@ -326,9 +326,11 @@ mod edgeware_bridge {
             
             assert!(attached_deposit > 0, "You have to attach some amount of assets to make transfer");
 
-            self.increase_transfer_nonce();
-
             let zero_address: AccountId = AccountId::from(ZERO_ADDRESS_BYTES);
+
+            self.check_asset_daily_limit(&zero_address, attached_deposit);
+
+            self.increase_transfer_nonce();
 
             self.env().emit_event(Transfer {
                 receiver,
@@ -345,6 +347,7 @@ mod edgeware_bridge {
         #[ink(message)]
         pub fn transfer_token(&mut self, receiver: String, amount: u128, asset: AccountId) -> bool {
             assert!(self.check_asset(&asset), "Unknown asset is trying to transfer");
+            self.check_asset_daily_limit(&asset, amount);
             let caller: AccountId = self.env().caller();
             assert!(self.token_contract.balance_of(caller) >= amount, "Sender doesn't have enough tokens to make transfer");  // TODO: refactor, in future there will be couple of tokens
             assert!(self.token_contract.burn(amount.clone(), caller), "Error while burn sender's tokens");
@@ -359,6 +362,20 @@ mod edgeware_bridge {
                 timestamp: self.env().block_timestamp() / 1000,
             });
             true
+        }
+
+        fn check_asset_daily_limit(&mut self, asset: &AccountId, amount: u128) {
+            let asset_daily_limit: u128 = self.daily_limit.get(asset).unwrap().clone();
+
+            assert!(asset_daily_limit > 0, "Can't transfer asset without daily limit");
+
+            self.update_daily_limit(asset);
+
+            let asset_daily_spent: u128 = self.daily_spend.get(asset).unwrap().clone();
+
+            assert!(amount + asset_daily_spent <= asset_daily_limit);
+
+            self.daily_spend.insert(*asset, asset_daily_spent + amount);
         }
 
         fn get_validators_who_approved(&self, message_hash: &Vec<u8>) -> Option<Vec<AccountId>> {
@@ -422,19 +439,6 @@ mod edgeware_bridge {
         }
 
         fn make_swap(&mut self, asset: AccountId, amount: u128, receiver: AccountId) {
-
-            let asset_daily_limit: u128 = self.daily_limit.get(&asset).unwrap().clone();
-
-            assert!(asset_daily_limit > 0, "Can't transfer asset without daily limit");
-
-            self.update_daily_limit(&asset);
-
-            let asset_daily_spent: u128 = self.daily_spend.get(&asset).unwrap().clone();
-
-            assert!(amount + asset_daily_spent <= asset_daily_limit);
-
-            self.daily_spend.insert(asset, asset_daily_spent + amount);
-
             let zero_address: AccountId = AccountId::from(ZERO_ADDRESS_BYTES);
             
             if asset == zero_address {
