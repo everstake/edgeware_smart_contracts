@@ -18,6 +18,7 @@ let api;
 
 const keyring = new Keyring({ type: 'sr25519' });
 let registry = new polkaTypes.TypeRegistry();
+const currentTime = (Date.now() / 1000).toFixed();
 
 function sleepAsync(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -41,6 +42,17 @@ function hashSwapMessageStruct(swap_data) {
     const hash = new sha3.SHA3(256);
     hash.update(Buffer.from(tmp.toU8a()));
     return hash.digest().toJSON().data;
+}
+
+function littleEndToHex(littleEnd) {
+    let value = '';
+    for ( var i = littleEnd.length - 1; i > 0; i-=2) {
+        let symbol1 = littleEnd[i];
+        let symbol2 = littleEnd[i-1];
+        value = value.concat(symbol2);
+        value = value.concat(symbol1);
+    }
+    return parseInt('0x'+value);
 }
 
 describe('Bridge', function() {
@@ -71,7 +83,7 @@ describe('Bridge', function() {
         it('set validators', async function() {
             this.timeout(50000);
             await sleepAsync(2000);
-            let validators = [keyring.addFromUri('//Alice').address, keyring.addFromUri('//Bob').address, keyring.addFromUri('//Charlie').address, keyring.addFromUri('//Dave').address, keyring.addFromUri('//Eve').address];
+            let validators = [keyring.addFromUri('//Alice').address, keyring.addFromUri('//Bob').address, keyring.addFromUri('//Charlie').address, keyring.addFromUri('//Dave').address, keyring.addFromUri('//Ferdie').address];
             for (let i = 0; i < validators.length; i++) {
                 await sleepAsync(3000);
                 let tx = await bridgeContract.tx.addValidator(0, -1, validators[i]);
@@ -92,60 +104,62 @@ describe('Bridge', function() {
             await sleepAsync(2000);
             let validators = [keyring.addFromUri('//Alice').address, keyring.addFromUri('//Bob').address, keyring.addFromUri('//Charlie').address, keyring.addFromUri('//Dave').address];
             for (let i = 0; i < validators.length; i++) {
-                await sleepAsync(3000);
                 let tx = await bridgeContract.tx.addValidator(0, -1, validators[i]);
                 let _ = await tx.signAndSend(keyring.addFromUri('//Alice'));
-                await sleepAsync(3000);
+                await sleepAsync(6000);
             }
         });
         it('1_one swap', async function() {
             this.timeout(50000);
+            let transferAmount = 1000000000000000000n;
             let swapMessage = {
                 chain_id: 0,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
-                timestamp: 1605078851,
-                amount: 1000000000000000000n,
+                timestamp: currentTime,
+                amount: transferAmount,
                 asset: '',
-                transfer_nonce: 0
+                transfer_nonce: 19
             }
 
             let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
             let _ = await tx.signAndSend(keyring.addFromUri('//Bob'));
-            await sleepAsync(5000);
+            await sleepAsync(6000);
             let hashedMessage = hashSwapMessageStruct(swapMessage);
             const { gasConsumed, result, outcome } = await bridgeContract.query.getCountOfApprovals(keyring.addFromUri('//Bod').address, 0, -1, hashedMessage);
             assert.strictEqual(result.toHuman().Ok.data, '0x0100');
         });
         it('2_check that swap accumulates', async function() {
             this.timeout(50000);
+            let transferAmount = 1000000000000000000n;
             let swapMessage = {
                 chain_id: 0,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
-                timestamp: 1605078851,
-                amount: 1000000000000000000n,
+                timestamp: currentTime,
+                amount: transferAmount,
                 asset: '',
-                transfer_nonce: 0
+                transfer_nonce: 19
             }
 
             let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
             let _ = await tx.signAndSend(keyring.addFromUri('//Alice'));
-            await sleepAsync(5000);
+            await sleepAsync(6000);
             let hashedMessage = hashSwapMessageStruct(swapMessage);
             const { gasConsumed, result, outcome } = await bridgeContract.query.getCountOfApprovals(keyring.addFromUri('//Alice').address, 0, -1, hashedMessage);
             assert.strictEqual(result.toHuman().Ok.data, '0x0200');
         });
         it('3_check that coins can be transfered', async function() {
             this.timeout(50000);
+            let transferAmount = 1000000000000000000n;
             let swapMessage = {
                 chain_id: 0,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
-                timestamp: 1605078851,
-                amount: 1000000000000000000n,
+                timestamp: currentTime,
+                amount: transferAmount,
                 asset: '',
-                transfer_nonce: 0
+                transfer_nonce: 19
             }
 
             let balance = await api.query.system.account(keyring.addFromUri('//Ferdie').address);
@@ -158,44 +172,99 @@ describe('Bridge', function() {
             assert.strictEqual(result.toHuman().Ok.data, '0x0000');  // check that swap was removed from the smart contract after execution
             balance = await api.query.system.account(keyring.addFromUri('//Ferdie').address);
             let balacneAfter = new BN(balance.data.free);
-            let transferedAmount = new BN(1000000000000000000n) - (new BN(1000000000000000000n) * new BN(process.env.CONTRACT_TRANSFER_FEE) / new BN(100));
-            assert.strictEqual(balacneAfter, balanceBefore + transferedAmount);
+            let transferedAmount = new BN(transferAmount).sub((new BN(transferAmount).mul(new BN(process.env.CONTRACT_TRANSFER_FEE))).div(new BN(100)));
+            assert.strictEqual(balacneAfter+0, transferedAmount.add(balanceBefore)+0);
         });
-        it('4_check coin transfering', async function() {
+        it('4_one validator sends wrong data', async function() {
             this.timeout(50000);
-            // const { gasConsumed, result, outcome } = await bridgeContract.query.testCoinTransfer(keyring.addFromUri('//Alice').address, 0, -1, '5GVy4KCvf1p4hcyk3rEvBHt3oGCcvFFzZez3NVqthkmoFEQq', 10000000);
-            let tx = await bridgeContract.tx.testCoinTransfer(0, -1, keyring.addFromUri('//Ferdie').address, 10000000000);
-            let _ = await tx.signAndSend(keyring.addFromUri('//Alice'));
-            await sleepAsync(5000);
-            const { nonce, data: balance } = await api.query.system.account(keyring.addFromUri('//Ferdie').address);
-            console.log(`balance of ${balance.free} and a nonce of ${nonce}`);
-        });
-    });
-    describe('swap token request', function() {
-        it('token swap', async function() {
-            this.timeout(50000);
-            let validators = [keyring.addFromUri('//Alice'), keyring.addFromUri('//Bob'), keyring.addFromUri('//Charlie')];
+            let transferAmount = 1000000000000000000n;
             let swapMessage = {
                 chain_id: 0,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
-                timestamp: 1605172881,
-                amount: 1000000000000000,
-                asset: process.env.TOKEN_ADDRESS,
-                transfer_nonce: 0
+                timestamp: currentTime,
+                amount: transferAmount,
+                asset: '',
+                transfer_nonce: 6
+            };
+
+            let balance = await api.query.system.account(keyring.addFromUri('//Eve').address);
+            let eveBalanceBefore = balance.data.free;
+
+            let validators = [keyring.addFromUri('//Alice'), keyring.addFromUri('//Bob'), keyring.addFromUri('//Charlie')];
+            for (let i = 0; i < validators.length; i++) {
+                if (i == validators.length - 1) {
+                    swapMessage.receiver = keyring.addFromUri('//Eve').address;
+                    let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
+                    let sig2 = await tx.signAndSend(validators[i]);
+                    await sleepAsync(6000);
+                } else {
+                    let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
+                    let sig2 = await tx.signAndSend(validators[i]);
+                    await sleepAsync(6000);
+                }
             }
+
+            balance = await api.query.system.account(keyring.addFromUri('//Eve').address);
+            let eveBalanceAfter = balance.data.free;
+
+            assert.strictEqual(eveBalanceBefore, eveBalanceBefore);
+        });
+        it('5_not validator try to send approval', async function() {
+            this.timeout(50000);
+            let transferAmount = 1000000000000000000n;
+            let swapMessage = {
+                chain_id: 0,
+                receiver: keyring.addFromUri('//Ferdie').address,
+                sender: 'fooBar',
+                timestamp: currentTime,
+                amount: transferAmount,
+                asset: '',
+                transfer_nonce: 4
+            };
+
+            let validators = [keyring.addFromUri('//Alice'), keyring.addFromUri('//Bob'), keyring.addFromUri('//Eve')];  // Eve here isn't a validator
+            for (let i = 0; i < validators.length; i++) {
+                let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
+                let sig2 = await tx.signAndSend(validators[i]);
+                await sleepAsync(6000);
+            }
+
+            let hashedMessage = hashSwapMessageStruct(swapMessage);
+            const { gasConsumed, result, outcome } = await bridgeContract.query.getCountOfApprovals(keyring.addFromUri('//Alice').address, 0, -1, hashedMessage);
+            let countOfApprovals = littleEndToHex(result.toHuman().Ok.data.slice(2));
+
+            assert.strictEqual(countOfApprovals, 2);
+        });
+    });
+    describe('swap token request', function() {
+        before(async function() {
+            this.timeout(50000);
             let tx = await bridgeContract.tx.addToken(0, -1, process.env.TOKEN_ADDRESS, 1000000000000000);
             let _ = await tx.signAndSend(keyring.addFromUri('//Alice'));
             await sleepAsync(6000);
 
-            let tx2 = await tokenContract.tx.addBridgeAddress(0, -1, process.env.BRIDGE_ADDRESS);
-            let sig1 = await tx.signAndSend(keyring.addFromUri('//Alice'));
+            tx = await tokenContract.tx.addBridgeAddress(0, -1, process.env.BRIDGE_ADDRESS);
+            _ = await tx.signAndSend(keyring.addFromUri('//Alice'));
             await sleepAsync(6000);
+        });
+        it('1_positive token swap', async function() {
+            this.timeout(50000);
+            let validators = [keyring.addFromUri('//Alice'), keyring.addFromUri('//Bob'), keyring.addFromUri('//Charlie')];
+            let amountToTransfer = 10000
+            let swapMessage = {
+                chain_id: 0,
+                receiver: keyring.addFromUri('//Ferdie').address,
+                sender: 'fooBar',
+                timestamp: currentTime,
+                amount: amountToTransfer,
+                asset: process.env.TOKEN_ADDRESS,
+                transfer_nonce: 3
+            }
 
-            let { gasConsumed, result, outcome } = await tokenContract.query.balanceOf(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Ferdie').address);
+            let result = await tokenContract.query.balanceOf(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Ferdie').address);
 
-            console.log('Balance before');
-            console.log(littleEndToHex(result.toHuman().Ok.data.slice(2)));
+            let balanceBefore = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
             
             for (let i = 0; i < validators.length; i++) {
                 let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
@@ -203,12 +272,83 @@ describe('Bridge', function() {
                 await sleepAsync(6000);
             }
 
-            await sleepAsync(6500);
+            await sleepAsync(6000);
 
-            gasConsumed, result, outcome = await tokenContract.query.balanceOf(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Ferdie').address);
+            result = await tokenContract.query.balanceOf(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Ferdie').address);
 
-            console.log('Balance after');
+            let balanceAfter = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+            let transferedAmount = amountToTransfer - (amountToTransfer * process.env.CONTRACT_TRANSFER_FEE / 100);
+
+            assert.strictEqual(balanceAfter, balanceBefore + transferedAmount);
+        });
+        it('2_one validator sends wrong data', async function() {
+            this.timeout(50000);
+            let swapMessage = {
+                chain_id: 0,
+                receiver: keyring.addFromUri('//Ferdie').address,
+                sender: 'fooBar',
+                timestamp: currentTime,
+                amount: 1000000000000000000n,
+                asset: process.env.TOKEN_ADDRESS,
+                transfer_nonce: 1
+            };
+
+            let result = await tokenContract.query.balanceOf(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Eve').address);
+
+            let eveBalanceBefore = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+
+            let validators = [keyring.addFromUri('//Alice'), keyring.addFromUri('//Bob'), keyring.addFromUri('//Charlie')];
+            for (let i = 0; i < validators.length; i++) {
+                if (i == validators.length - 1) {
+                    swapMessage.receiver = keyring.addFromUri('//Eve').address;
+                    let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
+                    let sig2 = await tx.signAndSend(validators[i]);
+                    await sleepAsync(6000);
+                } else {
+                    let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
+                    let sig2 = await tx.signAndSend(validators[i]);
+                    await sleepAsync(6000);
+                }
+            }
+
+            result = await tokenContract.query.balanceOf(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Eve').address);
+
+            let eveBalanceAfter = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+
+            assert.strictEqual(eveBalanceBefore, eveBalanceAfter);
+        });
+        it('3_not validator try to send approval', async function() {
+            this.timeout(50000);
+            let amountToTransfer = 10000
+            let swapMessage = {
+                chain_id: 0,
+                receiver: keyring.addFromUri('//Ferdie').address,
+                sender: 'fooBar',
+                timestamp: currentTime,
+                amount: amountToTransfer,
+                asset: process.env.TOKEN_ADDRESS,
+                transfer_nonce: 77094
+            };
+
+            let hashedMessage = hashSwapMessageStruct(swapMessage);
+
+            let validators = [keyring.addFromUri('//Alice'), keyring.addFromUri('//Bob'), keyring.addFromUri('//Eve')];  // Eve here isn't a validator
+            for (let i = 0; i < validators.length; i++) {
+                let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
+                let sig2 = await tx.signAndSend(validators[i]);
+                await sleepAsync(6000);
+                const { gasConsumed, result, outcome } = await bridgeContract.query.getCountOfApprovals(keyring.addFromUri('//Alice').address, 0, -1, hashedMessage);
+                let countOfApprovals = littleEndToHex(result.toHuman().Ok.data.slice(2));
+                console.log('Count of hashes');
+                console.log(result.toHuman().Ok.data);
+            }
+
+            const { gasConsumed, result, outcome } = await bridgeContract.query.getCountOfApprovals(keyring.addFromUri('//Alice').address, 0, -1, hashedMessage);
+            let countOfApprovals = littleEndToHex(result.toHuman().Ok.data.slice(2));
+            console.log('Final Count of hashes');
             console.log(result.toHuman().Ok.data);
+
+            assert.strictEqual(countOfApprovals, 2);
         });
     });
 });
