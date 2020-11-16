@@ -113,7 +113,7 @@ describe('Bridge', function() {
             this.timeout(50000);
             let transferAmount = 1000000000000000000n;
             let swapMessage = {
-                chain_id: 0,
+                chain_id: process.env.CHAIN_ID,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
                 timestamp: currentTime,
@@ -133,7 +133,7 @@ describe('Bridge', function() {
             this.timeout(50000);
             let transferAmount = 1000000000000000000n;
             let swapMessage = {
-                chain_id: 0,
+                chain_id: process.env.CHAIN_ID,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
                 timestamp: currentTime,
@@ -153,7 +153,7 @@ describe('Bridge', function() {
             this.timeout(50000);
             let transferAmount = 1000000000000000000n;
             let swapMessage = {
-                chain_id: 0,
+                chain_id: process.env.CHAIN_ID,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
                 timestamp: currentTime,
@@ -179,7 +179,7 @@ describe('Bridge', function() {
             this.timeout(50000);
             let transferAmount = 1000000000000000000n;
             let swapMessage = {
-                chain_id: 0,
+                chain_id: process.env.CHAIN_ID,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
                 timestamp: currentTime,
@@ -214,7 +214,7 @@ describe('Bridge', function() {
             this.timeout(50000);
             let transferAmount = 1000000000000000000n;
             let swapMessage = {
-                chain_id: 0,
+                chain_id: process.env.CHAIN_ID,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
                 timestamp: currentTime,
@@ -256,6 +256,32 @@ describe('Bridge', function() {
 
             assert.strictEqual(transferNonceAfter, transferNonce);
         });
+        it('7_wrong chain id sent', async function() {
+            this.timeout(50000);
+            let transferAmount = 1000000000000000000n;
+            let swapMessage = {
+                chain_id: 0,
+                receiver: keyring.addFromUri('//Ferdie').address,
+                sender: 'fooBar',
+                timestamp: currentTime,
+                amount: transferAmount,
+                asset: '',
+                transfer_nonce: 10
+            };
+
+            let validators = [keyring.addFromUri('//Alice'), keyring.addFromUri('//Bob'), keyring.addFromUri('//Charlie')];
+            for (let i = 0; i < validators.length; i++) {
+                let tx = await bridgeContract.tx.requestSwap(0, -1, swapMessage);
+                let sig2 = await tx.signAndSend(validators[i]);
+                await sleepAsync(6000);
+            }
+
+            let hashedMessage = hashSwapMessageStruct(swapMessage);
+            const { gasConsumed, result, outcome } = await bridgeContract.query.getCountOfApprovals(keyring.addFromUri('//Alice').address, 0, -1, hashedMessage);
+            let countOfApprovals = littleEndToHex(result.toHuman().Ok.data.slice(2));
+
+            assert.strictEqual(countOfApprovals, 0);
+        });
     });
     describe('swap token request', function() {
         before(async function() {
@@ -273,7 +299,7 @@ describe('Bridge', function() {
             let validators = [keyring.addFromUri('//Alice'), keyring.addFromUri('//Bob'), keyring.addFromUri('//Charlie')];
             let amountToTransfer = 10000
             let swapMessage = {
-                chain_id: 0,
+                chain_id: process.env.CHAIN_ID,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
                 timestamp: currentTime,
@@ -304,7 +330,7 @@ describe('Bridge', function() {
         it('2_one validator sends wrong data', async function() {
             this.timeout(50000);
             let swapMessage = {
-                chain_id: 0,
+                chain_id: process.env.CHAIN_ID,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
                 timestamp: currentTime,
@@ -341,7 +367,7 @@ describe('Bridge', function() {
             this.timeout(50000);
             let amountToTransfer = 10000
             let swapMessage = {
-                chain_id: 0,
+                chain_id: process.env.CHAIN_ID,
                 receiver: keyring.addFromUri('//Ferdie').address,
                 sender: 'fooBar',
                 timestamp: currentTime,

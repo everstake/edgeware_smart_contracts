@@ -35,6 +35,7 @@ mod edgeware_bridge {
         owner: AccountId,
         transfer_nonce: u128,
         token_contract: ERC20Token,
+        chain_id: u8,
     }
 
     /// Emitted when an user want to make cross chain transfer
@@ -77,6 +78,7 @@ mod edgeware_bridge {
             transfer_fee: u128,
             coin_daily_limit: u128,
             token_contract: ERC20Token,
+            chain_id: u8
         ) -> Self {
             let caller = Self::env().caller();
             let zero_address: AccountId = AccountId::from(ZERO_ADDRESS_BYTES);
@@ -101,6 +103,7 @@ mod edgeware_bridge {
                 daily_limit,
                 daily_limit_set_time,
                 token_contract,
+                chain_id,
             }
         }
 
@@ -291,6 +294,8 @@ mod edgeware_bridge {
         pub fn request_swap(&mut self, transfer_info: SwapMessage) {
             let caller: AccountId = self.env().caller();
             assert!(self.validators.get(&caller).is_some(), "Only Validator can send requests to swap assets");
+
+            assert!(transfer_info.chain_id == self.chain_id, "Swap request's chain ID doesn't");
 
             assert!(self.check_expiration_time(transfer_info.timestamp.clone()), "Transaction can't be sent because of expiration time");
 
