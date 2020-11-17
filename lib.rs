@@ -37,6 +37,7 @@ mod edgeware_bridge {
         transfer_nonce: u128,
         token_contract: ERC20Token,
         chain_id: u8,
+        min_amount_to_transfer: u128,
     }
 
     /// Emitted when an user want to make cross chain transfer
@@ -79,7 +80,8 @@ mod edgeware_bridge {
             transfer_fee: u128,
             coin_daily_limit: u128,
             token_contract: ERC20Token,
-            chain_id: u8
+            chain_id: u8,
+            min_amount_to_transfer: u128
         ) -> Self {
             let caller = Self::env().caller();
             let zero_address: AccountId = AccountId::from(ZERO_ADDRESS_BYTES);
@@ -106,6 +108,7 @@ mod edgeware_bridge {
                 validator_rewards: StorageHashMap::default(),
                 token_contract,
                 chain_id,
+                min_amount_to_transfer,
             }
         }
 
@@ -249,28 +252,6 @@ mod edgeware_bridge {
             }
             validators
         }
-        // DEV
-        #[ink(message)]
-        pub fn get_zero_address(&self) -> AccountId {
-            AccountId::from(ZERO_ADDRESS_BYTES)
-        }
-
-        // DEV
-        #[ink(message)]
-        pub fn get_swaps_list(&self) -> Vec<Vec<u8>> {
-            let mut swap_hashes: Vec<Vec<u8>> = Vec::new();
-            for el in self.swap_requests.keys() {
-                swap_hashes.push(el.clone());
-            }
-            swap_hashes
-        }
-
-        // DEV
-        #[ink(message)]
-        pub fn get_block_timestamp(&self) -> u64 {
-            let current_time: u64 = self.env().block_timestamp() / 1000;
-            current_time
-        }
 
         #[ink(message)]
         pub fn get_count_of_approvals(&self, message_hash: Vec<u8>) -> u16 {
@@ -299,7 +280,7 @@ mod edgeware_bridge {
         pub fn request_rewards(&mut self) {
             let caller: AccountId = self.env().caller();
             let rewards_amount: Option<&u128> = self.validator_rewards.get(&caller);
-            assert!(rewards_amount.is_some(), "You don't have any rewards");
+            assert!(rewards_amount.is_some(), "This address doesn't have any rewards");
 
             assert!(self.env().transfer(caller, *rewards_amount.unwrap()).is_ok(), "Error while transfer rewards to the validator");
 
@@ -312,7 +293,7 @@ mod edgeware_bridge {
             let caller: AccountId = self.env().caller();
             assert!(self.validators.get(&caller).is_some(), "Only Validator can send requests to swap assets");
 
-            assert!(transfer_info.chain_id == self.chain_id, "Swap request's chain ID doesn't");
+            assert!(transfer_info.chain_id == self.chain_id, "Swap request's chain ID doesn't match contract's chain ID");
 
             assert!(self.check_expiration_time(transfer_info.timestamp.clone()), "Transaction can't be sent because of expiration time");
 
@@ -346,7 +327,7 @@ mod edgeware_bridge {
         pub fn transfer_coin(&mut self, receiver: String) -> bool {
             let attached_deposit: u128 = self.env().transferred_balance();
             
-            assert!(attached_deposit > 0, "You have to attach some amount of assets to make transfer");
+            assert!(attached_deposit >= self.min_amount_to_transfer, "Transfer amount should be bigger or equal than minimum required amount");
 
             let zero_address: AccountId = AccountId::from(ZERO_ADDRESS_BYTES);
 
@@ -370,10 +351,11 @@ mod edgeware_bridge {
         // User method
         #[ink(message)]
         pub fn transfer_token(&mut self, receiver: String, amount: u128, asset: AccountId) -> bool {
+            assert!(amount >= self.min_amount_to_transfer, "Transfer amount should be bigger or equal than minimum required amount");
             assert!(self.check_asset(&asset), "Unknown asset is trying to transfer");
             self.check_asset_daily_limit(&asset, amount);
             let caller: AccountId = self.env().caller();
-            assert!(self.token_contract.balance_of(caller) >= amount, "Sender doesn't have enough tokens to make transfer");  // TODO: refactor, in future there will be couple of tokens
+            assert!(self.token_contract.balance_of(caller) >= amount, "Sender doesn't have enough tokens to make transfer");
             assert!(self.token_contract.burn(amount.clone(), caller), "Error while burn sender's tokens");
             self.increase_transfer_nonce();
 
