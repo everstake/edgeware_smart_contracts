@@ -28,6 +28,7 @@ mod edgeware_bridge {
         daily_limit: StorageHashMap<AccountId, u128>,
         daily_spend: StorageHashMap<AccountId, u128>,
         daily_limit_set_time: StorageHashMap<AccountId, u64>,
+        validator_rewards: StorageHashMap<AccountId, u128>,
         fee: u128,
         signature_threshold: u16,
         max_validator_count: u16,
@@ -102,6 +103,7 @@ mod edgeware_bridge {
                 transfer_nonce: 0,
                 daily_limit,
                 daily_limit_set_time,
+                validator_rewards: StorageHashMap::default(),
                 token_contract,
                 chain_id,
             }
@@ -270,7 +272,6 @@ mod edgeware_bridge {
             current_time
         }
 
-        // DEV
         #[ink(message)]
         pub fn get_count_of_approvals(&self, message_hash: Vec<u8>) -> u16 {
             let validators_who_approved_swap: Option<Vec<AccountId>> = self.get_validators_who_approved(&message_hash);
@@ -285,8 +286,24 @@ mod edgeware_bridge {
         }
 
         #[ink(message)]
-        pub fn test_coin_transfer(&mut self, receiver: AccountId, amount_to_send: u128) {
-            assert!(self.env().transfer(receiver, amount_to_send).is_ok(), "Error while transfer coins to the receiver");
+        pub fn get_validator_rewards(&self, validator: AccountId) -> u128 {
+            let rewards_amount: Option<&u128> = self.validator_rewards.get(&validator);
+
+            match rewards_amount {
+                Some(rew) => return *rew,
+                None => return 0,
+            }
+        }
+
+        #[ink(message)]
+        pub fn request_rewards(&mut self) {
+            let caller: AccountId = self.env().caller();
+            let rewards_amount: Option<&u128> = self.validator_rewards.get(&caller);
+            assert!(rewards_amount.is_some(), "You don't have any rewards");
+
+            assert!(self.env().transfer(caller, *rewards_amount.unwrap()).is_ok(), "Error while transfer rewards to the validator");
+
+            self.validator_rewards.take(&caller);
         }
 
         // Validator method
@@ -337,6 +354,8 @@ mod edgeware_bridge {
 
             self.increase_transfer_nonce();
 
+            self.distribute_rewards_for_validators(attached_deposit);
+
             self.env().emit_event(Transfer {
                 receiver,
                 sender: self.env().caller(),
@@ -367,6 +386,26 @@ mod edgeware_bridge {
                 timestamp: self.env().block_timestamp() / 1000,
             });
             true
+        }
+
+        fn distribute_rewards_for_validators(&mut self, amount: u128) {
+            let rewards_amount: u128 = (amount * self.fee) / 100;
+
+            for (validator_address, is_validator) in self.validators.iter() {
+                if *is_validator {
+                    let existing_rewards = self.validator_rewards.get(validator_address);
+                    match existing_rewards {
+                        Some(rew) => {
+                            let updated_reward: u128 = rew + (rewards_amount / self.validators.len() as u128);
+                            self.validator_rewards.insert(validator_address.clone(), updated_reward);
+                        },
+                        None => {
+                            let reward: u128 = rewards_amount / self.validators.len() as u128;
+                            self.validator_rewards.insert(validator_address.clone(), reward);
+                        }
+                    }
+                }
+            }
         }
 
         fn check_asset_daily_limit(&mut self, asset: &AccountId, amount: u128) {
@@ -448,6 +487,7 @@ mod edgeware_bridge {
             
             if asset == zero_address {
                 let amount_to_send: u128 = amount - (amount * self.fee / 100);
+                self.distribute_rewards_for_validators(amount);
                 assert!(self.env().transfer(receiver, amount_to_send).is_ok(), "Error while transfer coins to the receiver");
             } else {
                 let amount_to_send: u128 = amount - (amount * self.fee / 100);

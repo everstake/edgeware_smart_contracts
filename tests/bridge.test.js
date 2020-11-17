@@ -236,7 +236,49 @@ describe('Bridge', function() {
 
             assert.strictEqual(countOfApprovals, 2);
         });
-        it('6_try to send more than set limit', async function() {
+        it('6_get validator fee', async function() {
+            this.timeout(50000);
+
+            let result = await bridgeContract.query.getValidatorRewards(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Alice').address);
+            let rewardsAmount = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+
+            assert.strictEqual(rewardsAmount > 0, true);
+
+            let tx = await bridgeContract.tx.requestRewards(0, -1);
+            let _ = await tx.signAndSend(keyring.addFromUri('//Alice'));
+
+            await sleepAsync(6000);
+
+            result = await bridgeContract.query.getValidatorRewards(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Alice').address);
+            rewardsAmount = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+
+            assert.strictEqual(rewardsAmount == 0, true);
+        });
+        it('7_check fee after coin transfer', async function() {
+            this.timeout(50000);
+
+            let tx = await bridgeContract.tx.transferCoin(10000, -1, "asdfasdfsaf");
+            let _ = await tx.signAndSend(keyring.addFromUri('//Eve'));
+
+            await sleepAsync(6000);
+
+            let result = await bridgeContract.query.getValidatorRewards(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Alice').address);
+            let rewardsAmount = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+            console.log(`Rewards: ${rewardsAmount}`);
+
+            assert.strictEqual(rewardsAmount > 0, true);
+
+            tx = await bridgeContract.tx.requestRewards(0, -1);
+            _ = await tx.signAndSend(keyring.addFromUri('//Alice'));
+
+            await sleepAsync(6000);
+
+            result = await bridgeContract.query.getValidatorRewards(keyring.addFromUri('//Alice').address, 0, -1, keyring.addFromUri('//Alice').address);
+            rewardsAmount = littleEndToHex(result.result.toHuman().Ok.data.slice(2));
+
+            assert.strictEqual(rewardsAmount == 0, true);
+        });
+        it('8_try to send more than set limit', async function() {
             this.timeout(50000);
             let transferAmount = 1000000000000000000n;
 
@@ -256,7 +298,7 @@ describe('Bridge', function() {
 
             assert.strictEqual(transferNonceAfter, transferNonce);
         });
-        it('7_wrong chain id sent', async function() {
+        it('9_wrong chain id sent', async function() {
             this.timeout(50000);
             let transferAmount = 1000000000000000000n;
             let swapMessage = {
