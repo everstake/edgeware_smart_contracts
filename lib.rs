@@ -290,6 +290,14 @@ mod edgeware_bridge {
             }
         }
 
+        //  This method necessary such as there can be not relevant and did not approved requests which will take storage
+        //  and to clean the storage and save some money owner can use this method
+        #[ink(message)]
+        pub fn clean_request_swaps_list(&mut self) {
+            self.ensure_owner(self.env().caller());
+            self.swap_requests = StorageHashMap::default();
+        }
+
         #[ink(message)]
         pub fn request_rewards(&mut self) {
             let caller: AccountId = self.env().caller();
