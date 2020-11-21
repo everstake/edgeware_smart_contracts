@@ -254,6 +254,20 @@ mod edgeware_bridge {
         }
 
         #[ink(message)]
+        pub fn get_chain_id(&self) -> u8 {
+            self.chain_id
+        }
+
+        #[ink(message)]
+        pub fn get_request_swaps(&self) -> Vec<Vec<u8>> {
+            let mut swaps: Vec<Vec<u8>> = Vec::new();
+            for el in self.swap_requests.keys() {
+                swaps.push(el.clone());
+            }
+            swaps
+        }
+
+        #[ink(message)]
         pub fn get_count_of_approvals(&self, message_hash: Vec<u8>) -> u16 {
             let validators_who_approved_swap: Option<Vec<AccountId>> = self.get_validators_who_approved(&message_hash);
             match validators_who_approved_swap {
