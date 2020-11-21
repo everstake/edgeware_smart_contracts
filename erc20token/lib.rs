@@ -5,15 +5,12 @@ use ink_lang as ink;
 
 #[ink::contract]
 pub mod erc20token {
-    use ink_storage::{
-        collections::HashMap as StorageHashMap,
-        lazy::Lazy,
-    };
+    use ink_storage::collections::HashMap as StorageHashMap;
     use scale::alloc::string::String;
 
     #[ink(storage)]
     pub struct ERC20Token {
-        total_supply: Lazy<Balance>,
+        total_supply: u128,
         balances: StorageHashMap<AccountId, Balance>,
         allowances: StorageHashMap<(AccountId, AccountId), Balance>,
         name: String,
@@ -61,7 +58,7 @@ pub mod erc20token {
         pub fn new(name: String, symbol: String) -> Self {
             let caller = Self::env().caller();
             let instance = Self {
-                total_supply: Lazy::new(0),
+                total_supply: 0,
                 balances: StorageHashMap::new(),
                 allowances: StorageHashMap::new(),
                 name,
@@ -93,8 +90,8 @@ pub mod erc20token {
 
         /// Returns the total token supply.
         #[ink(message)]
-        pub fn total_supply(&self) -> Balance {
-            *self.total_supply
+        pub fn total_supply(&self) -> u128 {
+            self.total_supply
         }
 
         /// Returns the account balance for the specified `owner`.
@@ -184,6 +181,7 @@ pub mod erc20token {
 
             let receiver_balance = self.balance_of(receiver.clone());
             self.balances.insert(receiver.clone(), receiver_balance + amount);
+            self.total_supply = self.total_supply + amount;
 
             self.env().emit_event(Mint {
                 receiver,
@@ -202,6 +200,7 @@ pub mod erc20token {
             }
 
             self.balances.insert(holder.clone(), holder_balance - amount);
+            self.total_supply = self.total_supply - amount;
 
             self.env().emit_event(Burn {
                 holder,
